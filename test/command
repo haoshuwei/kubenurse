@@ -1,0 +1,8 @@
+curl -X POST 10.96.251.165:8080/diagnose  --data '{"check_type":"service", "check_protocal":"http", "check_dst_endpoint":"nginx.dst.svc:8080"}'
+
+curl -X POST 10.96.251.165:8080/diagnose  --data '{"check_type":"service", "check_protocal":"tcp", "check_dst_endpoint":"mysql.mysql.svc:3306"}'
+
+curl -X POST 10.96.251.165:8080/diagnose  --data '{"check_type":"ingress", "check_protocal":"http", "check_dst_endpoint":"nginx.haoshuwei.com", "check_ingress_in_cluster": "true"}'
+
+
+curl -H 'Host: nginx.haoshuwei.com' http://10.10.10.117:32596

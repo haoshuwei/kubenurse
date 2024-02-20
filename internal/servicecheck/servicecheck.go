@@ -20,7 +20,7 @@ const (
 	okStr            = "ok"
 	errStr           = "error"
 	skippedStr       = "skipped"
-	metricsNamespace = "kubenurse"
+	metricsNamespace = "ubinurse"
 )
 
 // New configures the checker with a httpClient and a cache timeout for check
@@ -33,7 +33,7 @@ func New(_ context.Context, discovery *kubediscovery.Client, promRegistry *prome
 			Name:      "errors_total",
 			Help:      "Kubenurse error counter partitioned by error type",
 		},
-		[]string{"type"},
+		[]string{"type", "protocal", "endpoint"},
 	)
 
 	durationHistogram := prometheus.NewHistogramVec(
@@ -141,6 +141,33 @@ func (c *Checker) Run() (Result, bool) {
 	return res, haserr
 }
 
+func (c *Checker) RunFunc(checkType, checkProtocal, checkDstEndpoint string, inCluster bool) bool {
+	var (
+		haserr bool
+		err    error
+	)
+
+	// checkType ingress dns ip
+	// switch checkProtocal {
+	// case "udp":
+	// 	//
+	// case "tcp":
+	// 	//
+	// default:
+	// 	if checkType == "ingress" {
+	// 		err = c.measureV2(c.CheckAlive, checkType, checkProtocal, checkDstEndpoint)
+	// 	} else {
+	// 		err = c.measureV2(c.CheckService, checkType, checkProtocal, checkDstEndpoint)
+	// 	}
+
+	// }
+	err = c.measureV2(c.CheckService, checkType, checkProtocal, checkDstEndpoint, inCluster)
+
+	haserr = haserr || (err != nil)
+
+	return haserr
+}
+
 // RunScheduled runs the checks in the specified interval which can be used to keep the metrics up-to-date. This
 // function does not return until StopScheduled is called.
 func (c *Checker) RunScheduled(d time.Duration) {
@@ -202,6 +229,19 @@ func (c *Checker) MeService(ctx context.Context) (string, error) {
 	return c.doRequest(ctx, c.KubenurseServiceURL+"/alwayshappy")
 }
 
+// func (c *Checker) CheckService(ctx context.Context, ep string, inCluster bool) error {
+// 	return c.doHttpCheck(ctx, ep, inCluster)
+// }
+
+func (c *Checker) CheckService(ctx context.Context, ep string, checkProtocal string, inCluster bool) error {
+	switch checkProtocal {
+	case "tcp":
+		return c.doTcpCheck(ctx, ep)
+	default:
+		return c.doHttpCheck(ctx, ep, inCluster)
+	}
+}
+
 // checkNeighbours checks the /alwayshappy endpoint from every discovered kubenurse neighbour. Neighbour pods on nodes
 // which are not schedulable are excluded from this check to avoid possible false errors.
 func (c *Checker) checkNeighbours(nh []kubediscovery.Neighbour) {
@@ -243,4 +283,28 @@ func (c *Checker) measure(check Check, label string) (string, error) {
 	}
 
 	return res, err
+}
+
+func (c *Checker) measureV2(check CheckV2, checkType, checkProtocal, checkDstEndpoint string, inCluster bool) error {
+	start := time.Now()
+
+	// Add our label (check type) to the context so our http tracer can annotate
+	// metrics and errors based with the label
+	ctx := context.WithValue(context.Background(), kubenurseTypeKey{}, checkType)
+
+	// Execute check
+	err := check(ctx, checkDstEndpoint, checkProtocal, inCluster)
+	//log.Printf("measureV2 label: %s, ep: %s", label, ep)
+
+	// Process metrics
+	c.durationHistogram.WithLabelValues(checkType).Observe(time.Since(start).Seconds())
+
+	if err != nil {
+		log.Printf("Probe failed. Type: %s, Protocal: %s, Endpoint: %s, Err: %v", checkType, checkProtocal, checkDstEndpoint, err)
+		c.errorCounter.WithLabelValues(checkType, checkProtocal, checkDstEndpoint).Inc()
+	} else {
+		log.Printf("Probe passed. Type: %s, Protocal: %s, Endpoint: %s", checkType, checkProtocal, checkDstEndpoint)
+	}
+
+	return err
 }

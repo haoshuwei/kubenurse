@@ -40,6 +40,13 @@ type Server struct {
 	ready bool
 }
 
+type Diagnose struct {
+	CheckType             string `json:"check_type"`
+	CheckProtocal         string `json:"check_protocal"`
+	CheckDstEndpoint      string `json:"check_dst_endpoint"`
+	CheckIngressInCluster bool `json:"check_ingress_in_cluster"`
+}
+
 // New creates a new kubenurse server. The server can be configured with the following environment variables:
 // * KUBENURSE_USE_TLS
 // * KUBENURSE_ALLOW_UNSCHEDULABLE
@@ -162,6 +169,7 @@ func New(ctx context.Context, k8s kubernetes.Interface) (*Server, error) { //nol
 	// setup http routes
 	mux.HandleFunc("/ready", server.readyHandler())
 	mux.HandleFunc("/alive", server.aliveHandler())
+	mux.HandleFunc("/diagnose", server.diagnoseHandler())
 	mux.HandleFunc("/alwayshappy", func(http.ResponseWriter, *http.Request) {})
 	mux.Handle("/metrics", promhttp.HandlerFor(promRegistry, promhttp.HandlerOpts{}))
 	mux.Handle("/", http.RedirectHandler("/alive", http.StatusMovedPermanently))

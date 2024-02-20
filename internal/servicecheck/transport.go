@@ -6,9 +6,12 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 const (
@@ -23,6 +26,10 @@ func (c *Checker) doRequest(ctx context.Context, url string) (string, error) {
 	token, err := os.ReadFile(K8sTokenFile)
 	if err != nil {
 		return errStr, fmt.Errorf("load kubernetes serviceaccount token from %s: %w", K8sTokenFile, err)
+	}
+
+	if !strings.HasPrefix(url, "http://") {
+		url = fmt.Sprintf("http://%s", url)
 	}
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, http.NoBody)
@@ -84,4 +91,53 @@ func generateTLSConfig(extraCA string) (*tls.Config, error) {
 	}
 
 	return tlsConfig, nil
+}
+
+// doRequest does an http request only to get the http status code
+func (c *Checker) doHttpCheck(ctx context.Context, ep string, inCluster bool) error {
+	var host string
+	if !strings.HasPrefix(ep, "http://") {
+		ep = fmt.Sprintf("http://%s", ep)
+	}
+
+	// Ingress nginx.liusheng.com http://nginx.liusheng.com
+	if inCluster {
+		host = strings.TrimPrefix(ep, "http://")
+		ep = "http://10.10.10.117:32596"
+		log.Printf("+++ %s %s", ep, host)
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", ep, http.NoBody)
+
+	// Only add the Bearer for API Server Requests
+	if inCluster {
+		// req.Header.Set("Host", host)
+		// log.Printf("+++ %s %s", req.Host, host)
+		req.Host = host
+		// log.Printf("+++ %s %s", req.Host, host)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	// Body is non-nil if err is nil, so close it
+	_ = resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	return errors.New(resp.Status)
+}
+
+func (c *Checker) doTcpCheck(ctx context.Context, ep string) error {
+	conn, err := net.DialTimeout("tcp", ep, time.Second*3)
+	if err != nil {
+		return err
+	} else {
+		defer conn.Close()
+	}
+	return nil
 }
