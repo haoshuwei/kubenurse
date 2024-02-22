@@ -44,7 +44,7 @@ type Diagnose struct {
 	CheckType             string `json:"check_type"`
 	CheckProtocal         string `json:"check_protocal"`
 	CheckDstEndpoint      string `json:"check_dst_endpoint"`
-	CheckIngressInCluster bool `json:"check_ingress_in_cluster"`
+	CheckIngressInCluster bool   `json:"check_ingress_in_cluster"`
 }
 
 // New creates a new kubenurse server. The server can be configured with the following environment variables:
@@ -161,6 +161,8 @@ func New(ctx context.Context, k8s kubernetes.Interface) (*Server, error) { //nol
 	chk.SkipCheckMeIngress = os.Getenv("KUBENURSE_CHECK_ME_INGRESS") == "false"
 	chk.SkipCheckMeService = os.Getenv("KUBENURSE_CHECK_ME_SERVICE") == "false"
 	chk.SkipCheckNeighbourhood = os.Getenv("KUBENURSE_CHECK_NEIGHBOURHOOD") == "false"
+
+	chk.KubernetesIngressEndpoint = os.Getenv("KUBERNETES_INGRESS_ENDPOINT")
 
 	chk.UseTLS = server.useTLS
 
