@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    ubinurse.ubiquant.com/protocal: "http"
+    ubinurse.ubiquant.com/port: "8080"
+    ubinurse.ubiquant.com/path: "/"
+    ubinurse.ubiquant.com/interval: "10"
+  labels:
+    app: nginx
+  name: nginx
+  namespace: dst
+spec:
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - port: 8080
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: nginx
+  sessionAffinity: None
+  type: ClusterIP

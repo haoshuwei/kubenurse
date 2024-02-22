@@ -32,6 +32,9 @@ type Checker struct {
 	allowUnschedulable     bool
 	SkipCheckNeighbourhood bool
 
+	// Ingress Endpoint
+	KubernetesIngressEndpoint string
+
 	// TLS
 	UseTLS bool
 

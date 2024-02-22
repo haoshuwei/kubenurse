@@ -13,7 +13,7 @@ WORKDIR /go/src/${PACKAGE}
 
 COPY . .
 # Build
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -a -o kubenurse -ldflags "-X main.GitCommit=$(git rev-list -1 HEAD)" ${PACKAGE}
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -a -o kubenurse -ldflags "-X main.GitCommit=$(git rev-list -1 HEAD)" ${PACKAGE}/cmd/ubinurse
 
 
 
