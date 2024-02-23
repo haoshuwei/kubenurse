@@ -160,13 +160,11 @@ func (server *Server) onIngressAdd(ing *networkingv1.Ingress) error {
 }
 
 func (server *Server) onIngressUpdate(ing *networkingv1.Ingress) error {
-	//return server.syncDNSRecordAsWhole()
-	return nil
+	return server.updateIngressCheck(ing)
 }
 
 func (server *Server) onIngressDelete(ing *networkingv1.Ingress) error {
-	//return server.syncDNSRecordAsWhole()
-	return nil
+	return server.deleteIngressCheck(ing)
 }
 
 func (server *Server) addService(obj interface{}) {
@@ -247,16 +245,40 @@ func (server *Server) addIngress(obj interface{}) {
 }
 
 func (server *Server) updateIngress(oldObj, newObj interface{}) {
-	// TODO: add logic
-	// svc, ok := obj.(*corev1.Service)
-	// if !ok {
-	// 	return
-	// }
-	// if svc.Annotations["ubinurse.ubiquant.com/port"] == "" || svc.Annotations["ubinurse.ubiquant.com/path"] == "" || svc.Annotations["ubinurse.ubiquant.com/protocal"] == "" {
-	// 	return
-	// }
-	// klog.V(2).Infof("enqueue service add event for %v/%v", svc.Namespace, svc.Name)
-	// server.enqueue(svc, ServiceUpdate)
+	oldIng, ok := oldObj.(*networkingv1.Ingress)
+	if !ok {
+		return
+	}
+	newIng, ok := newObj.(*networkingv1.Ingress)
+	if !ok {
+		return
+	}
+
+	oldHost := oldIng.Annotations[constant.UbinurseKeyHost]
+	oldPath := oldIng.Annotations[constant.UbinurseKeyPath]
+	oldInterval := oldIng.Annotations[constant.UbinurseKeyInterval]
+
+	newHost := newIng.Annotations[constant.UbinurseKeyHost]
+	newPath := newIng.Annotations[constant.UbinurseKeyPath]
+	newInterval := newIng.Annotations[constant.UbinurseKeyInterval]
+
+	if oldHost != "" && oldPath != "" && oldInterval != "" {
+		// skip
+		if oldHost == newHost && oldPath == newPath && oldInterval == newInterval {
+			return
+		}
+		// should stop old goroutine
+		if newHost == "" || newPath == "" || newInterval == "" {
+			newIng.Annotations[constant.UbinurseKeyDisable] = "true"
+		}
+	} else {
+		// should skip stop old goroutine
+		if newHost == "" || newPath == "" || newInterval == "" {
+			return
+		}
+	}
+	klog.Infof("enqueue ingress update event for %v/%v", newIng.Namespace, newIng.Name)
+	server.enqueue(newIng, IngressUpdate)
 }
 
 func (server *Server) deleteIngress(obj interface{}) {
@@ -264,10 +286,10 @@ func (server *Server) deleteIngress(obj interface{}) {
 	if !ok {
 		return
 	}
-	if ing.Annotations[constant.UbinurseKeyProtocal] == "" || ing.Annotations[constant.UbinurseKeyPort] == "" || ing.Annotations[constant.UbinurseKeyPath] == "" || ing.Annotations[constant.UbinurseKeyInterval] == "" {
+	if ing.Annotations[constant.UbinurseKeyHost] == "" || ing.Annotations[constant.UbinurseKeyPath] == "" || ing.Annotations[constant.UbinurseKeyInterval] == "" {
 		return
 	}
-	klog.V(2).Infof("enqueue ingress delete event for %v/%v", ing.Namespace, ing.Name)
+	klog.Infof("enqueue ingress delete event for %v/%v", ing.Namespace, ing.Name)
 	server.enqueue(ing, IngressDelete)
 }
 
@@ -368,6 +390,7 @@ func (server *Server) addIngressCheck(ing *networkingv1.Ingress) error {
 	checkHost := ing.Annotations[constant.UbinurseKeyHost]
 	checkPath := ing.Annotations[constant.UbinurseKeyPath]
 	checkInCluster := ing.Annotations[constant.UbinurseKeyInCluster]
+
 	if checkInCluster == "" {
 		checkInCluster = "true"
 	}
@@ -396,6 +419,35 @@ func (server *Server) addIngressCheck(ing *networkingv1.Ingress) error {
 	server.cacheManager.Cache.Set(channelName, stopCh, cachev2.NoExpiration)
 
 	go server.startCheckIngress(diagnose, period, stopCh)
+	return nil
+}
+
+func (server *Server) updateIngressCheck(ing *networkingv1.Ingress) error {
+	checkDisable := ing.Annotations[constant.UbinurseKeyDisable]
+	server.deleteIngressCheck(ing)
+	// only delete service check
+	if checkDisable == "true" {
+		return nil
+	}
+	return server.addIngressCheck(ing)
+}
+
+func (server *Server) deleteIngressCheck(ing *networkingv1.Ingress) error {
+	ingName := ing.Name
+	ingNamespace := ing.Namespace
+
+	channelName := fmt.Sprintf("%s-%s-ing", ingNamespace, ingName)
+	stopChFromCache, found := server.cacheManager.Cache.Get(channelName)
+	if !found {
+		return nil
+	}
+	stopCh, ok := stopChFromCache.(chan bool)
+	if !ok {
+		klog.Errorf("failed to get stopCh form cache")
+		return nil
+	}
+	stopCh <- true
+	server.cacheManager.Cache.Delete(channelName)
 	return nil
 }
 
