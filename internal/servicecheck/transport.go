@@ -6,12 +6,14 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/postfinance/kubenurse/pkg/constant"
 )
 
 const (
@@ -94,27 +96,47 @@ func generateTLSConfig(extraCA string) (*tls.Config, error) {
 }
 
 // doRequest does an http request only to get the http status code
-func (c *Checker) doHttpCheck(ctx context.Context, ep string, inCluster bool) error {
-	var host string
+func (c *Checker) doHttpCheck(ctx context.Context, ep string) error {
 	if !strings.HasPrefix(ep, "http://") {
 		ep = fmt.Sprintf("http://%s", ep)
 	}
 
-	// Ingress nginx.liusheng.com http://nginx.liusheng.com
-	if inCluster {
-		host = strings.TrimPrefix(ep, "http://")
-		ep = "http://10.10.10.117:32596"
-		log.Printf("+++ %s %s", ep, host)
+	req, _ := http.NewRequestWithContext(ctx, "GET", ep, http.NoBody)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
 	}
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", ep, http.NoBody)
+	// Body is non-nil if err is nil, so close it
+	_ = resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	return errors.New(resp.Status)
+}
+
+func (c *Checker) doIngressCheck(ctx context.Context, ep string, inCluster bool) error {
+	var host string
+	var ingEp string
+	if inCluster {
+		reg := regexp.MustCompile(constant.Pattern)
+		host = reg.FindString(ep)
+		path := strings.TrimPrefix(ep, host)
+		//ep = "http://10.10.10.117:32596"
+		ingEp = fmt.Sprintf("http://%s%s", os.Getenv("UBINURSE_INGRESS_NODE_IP"), path)
+		// log.Printf("+++ %s %s %s", host, path, ingEp)
+	} else {
+		ingEp = fmt.Sprintf("https://%s", ep)
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", ingEp, http.NoBody)
 
 	// Only add the Bearer for API Server Requests
 	if inCluster {
-		// req.Header.Set("Host", host)
-		// log.Printf("+++ %s %s", req.Host, host)
 		req.Host = host
-		// log.Printf("+++ %s %s", req.Host, host)
 	}
 
 	resp, err := c.httpClient.Do(req)

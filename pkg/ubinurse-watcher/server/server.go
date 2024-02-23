@@ -8,7 +8,9 @@ import (
 	"strconv"
 	"time"
 
+	cachev2 "github.com/patrickmn/go-cache"
 	"github.com/postfinance/kubenurse/pkg/constant"
+	cachev1 "github.com/postfinance/kubenurse/pkg/ubinurse-watcher/cache"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -30,6 +32,7 @@ type Server struct {
 	queue                 workqueue.RateLimitingInterface
 	svcInformerSynced     cache.InformerSynced
 	ingressInformerSynced cache.InformerSynced
+	cacheManager          *cachev1.CacheManager
 }
 
 type EventType string
@@ -52,9 +55,10 @@ type Event struct {
 }
 
 type Diagnose struct {
-	CheckType     string `json:"check_type"`
-	CheckProtocal string `json:"check_protocal"`
-	CheckEndpoint string `json:"check_dst_endpoint"`
+	CheckType             string `json:"check_type"`
+	CheckProtocal         string `json:"check_protocal"`
+	CheckEndpoint         string `json:"check_dst_endpoint"`
+	CheckIngressIncluster bool   `json:"check_ingress_in_cluster"`
 }
 
 func NewServer(client clientset.Interface,
@@ -79,6 +83,8 @@ func NewServer(client clientset.Interface,
 		DeleteFunc: server.deleteIngress,
 	})
 	server.ingressInformerSynced = ingressInformer.HasSynced
+
+	server.cacheManager = cachev1.NewCacheManager()
 
 	return server
 }
@@ -142,18 +148,15 @@ func (server *Server) onServiceAdd(svc *corev1.Service) error {
 }
 
 func (server *Server) onServiceUpdate(svc *corev1.Service) error {
-	//return server.syncDNSRecordAsWhole()
-	return nil
+	return server.updateServiceCheck(svc)
 }
 
 func (server *Server) onServiceDelete(svc *corev1.Service) error {
-	//return server.syncDNSRecordAsWhole()
-	return nil
+	return server.deleteServiceCheck(svc)
 }
 
 func (server *Server) onIngressAdd(ing *networkingv1.Ingress) error {
-	//return server.syncDNSRecordAsWhole()
-	return nil
+	return server.addIngressCheck(ing)
 }
 
 func (server *Server) onIngressUpdate(ing *networkingv1.Ingress) error {
@@ -164,6 +167,116 @@ func (server *Server) onIngressUpdate(ing *networkingv1.Ingress) error {
 func (server *Server) onIngressDelete(ing *networkingv1.Ingress) error {
 	//return server.syncDNSRecordAsWhole()
 	return nil
+}
+
+func (server *Server) addService(obj interface{}) {
+	svc, ok := obj.(*corev1.Service)
+	if !ok {
+		return
+	}
+	if svc.Annotations["ubinurse.ubiquant.com/port"] == "" || svc.Annotations["ubinurse.ubiquant.com/path"] == "" || svc.Annotations["ubinurse.ubiquant.com/protocal"] == "" {
+		klog.Infof("service add event for %v/%v without ubinurse enable", svc.Namespace, svc.Name)
+		return
+	}
+	klog.Infof("enqueue service add event for %v/%v", svc.Namespace, svc.Name)
+	server.enqueue(svc, ServiceAdd)
+}
+
+func (server *Server) updateService(oldObj, newObj interface{}) {
+	oldSvc, ok := oldObj.(*corev1.Service)
+	if !ok {
+		return
+	}
+	newSvc, ok := newObj.(*corev1.Service)
+	if !ok {
+		return
+	}
+
+	oldProtocal := oldSvc.Annotations[constant.UbinurseKeyProtocal]
+	oldPort := oldSvc.Annotations[constant.UbinurseKeyPort]
+	oldPath := oldSvc.Annotations[constant.UbinurseKeyPath]
+	oldInterval := oldSvc.Annotations[constant.UbinurseKeyInterval]
+
+	newProtocal := newSvc.Annotations[constant.UbinurseKeyProtocal]
+	newPort := newSvc.Annotations[constant.UbinurseKeyPort]
+	newPath := newSvc.Annotations[constant.UbinurseKeyPath]
+	newInterval := newSvc.Annotations[constant.UbinurseKeyInterval]
+
+	if oldProtocal != "" && oldPort != "" && oldPath != "" && oldInterval != "" {
+		// skip
+		if oldProtocal == newProtocal && oldPort == newPort && oldPath == newPath && oldInterval == newInterval {
+			return
+		}
+		// should stop old goroutine
+		if newProtocal == "" || newPort == "" || newPath == "" || newInterval == "" {
+			newSvc.Annotations[constant.UbinurseKeyDisable] = "true"
+		}
+	} else {
+		// should skip stop old goroutine
+		if newProtocal == "" || newPort == "" || newPath == "" || newInterval == "" {
+			return
+		}
+	}
+	klog.Infof("enqueue service update event for %v/%v", newSvc.Namespace, newSvc.Name)
+	server.enqueue(newSvc, ServiceUpdate)
+}
+
+func (server *Server) deleteService(obj interface{}) {
+	svc, ok := obj.(*corev1.Service)
+	if !ok {
+		return
+	}
+	if svc.Annotations["ubinurse.ubiquant.com/port"] == "" || svc.Annotations["ubinurse.ubiquant.com/path"] == "" || svc.Annotations["ubinurse.ubiquant.com/protocal"] == "" {
+		klog.Infof("service add event for %v/%v without ubinurse enable", svc.Namespace, svc.Name)
+		return
+	}
+	klog.Infof("enqueue service delete event for %v/%v", svc.Namespace, svc.Name)
+	server.enqueue(svc, ServiceDelete)
+}
+
+func (server *Server) addIngress(obj interface{}) {
+	ing, ok := obj.(*networkingv1.Ingress)
+	if !ok {
+		return
+	}
+	if ing.Annotations[constant.UbinurseKeyHost] == "" || ing.Annotations[constant.UbinurseKeyPath] == "" || ing.Annotations[constant.UbinurseKeyInterval] == "" {
+		return
+	}
+	klog.Infof("enqueue ingress add event for %v/%v", ing.Namespace, ing.Name)
+	server.enqueue(ing, IngressAdd)
+}
+
+func (server *Server) updateIngress(oldObj, newObj interface{}) {
+	// TODO: add logic
+	// svc, ok := obj.(*corev1.Service)
+	// if !ok {
+	// 	return
+	// }
+	// if svc.Annotations["ubinurse.ubiquant.com/port"] == "" || svc.Annotations["ubinurse.ubiquant.com/path"] == "" || svc.Annotations["ubinurse.ubiquant.com/protocal"] == "" {
+	// 	return
+	// }
+	// klog.V(2).Infof("enqueue service add event for %v/%v", svc.Namespace, svc.Name)
+	// server.enqueue(svc, ServiceUpdate)
+}
+
+func (server *Server) deleteIngress(obj interface{}) {
+	ing, ok := obj.(*networkingv1.Ingress)
+	if !ok {
+		return
+	}
+	if ing.Annotations[constant.UbinurseKeyProtocal] == "" || ing.Annotations[constant.UbinurseKeyPort] == "" || ing.Annotations[constant.UbinurseKeyPath] == "" || ing.Annotations[constant.UbinurseKeyInterval] == "" {
+		return
+	}
+	klog.V(2).Infof("enqueue ingress delete event for %v/%v", ing.Namespace, ing.Name)
+	server.enqueue(ing, IngressDelete)
+}
+
+func (server *Server) enqueue(obj interface{}, eventType EventType) {
+	e := &Event{
+		Obj:  obj,
+		Type: eventType,
+	}
+	server.queue.Add(e)
 }
 
 func (server *Server) addServiceCheck(svc *corev1.Service) error {
@@ -177,23 +290,50 @@ func (server *Server) addServiceCheck(svc *corev1.Service) error {
 	}
 	svcName := svc.Name
 	svcNamespace := svc.Namespace
-	stop := make(chan struct{})
+	ep := fmt.Sprintf("%s.%s.svc:%s%s", svcName, svcNamespace, checkPort, checkPath)
 	diagnose := &Diagnose{
 		CheckType:     constant.TypeService,
 		CheckProtocal: checkProtocal,
-		CheckEndpoint: fmt.Sprintf("%s.%s.svc:%s%s", svcName, svcNamespace, checkPort, checkPath),
+		CheckEndpoint: ep,
 	}
+	channelName := fmt.Sprintf("%s-%s-svc", svcNamespace, svcName)
+	stopCh := make(chan bool)
+	server.cacheManager.Cache.Set(channelName, stopCh, cachev2.NoExpiration)
 
-	go server.startCheckService(diagnose, period, stop)
+	go server.startCheckService(diagnose, period, stopCh)
 	return nil
-	// go wait.Until(func() {
-	// 	if err := dnsctl.syncDNSRecordAsWhole(); err != nil {
-	// 		klog.Errorf("failed to sync dns record, %v", err)
-	// 	}
-	// }, time.Duration(period)*time.Second, stop)
 }
 
-func (server *Server) startCheckService(diagnose *Diagnose, period int, stopCh <-chan struct{}) {
+func (server *Server) updateServiceCheck(svc *corev1.Service) error {
+	checkDisable := svc.Annotations[constant.UbinurseKeyDisable]
+	server.deleteServiceCheck(svc)
+	// only delete service check
+	if checkDisable == "true" {
+		return nil
+	}
+	return server.addServiceCheck(svc)
+}
+
+func (server *Server) deleteServiceCheck(svc *corev1.Service) error {
+	svcName := svc.Name
+	svcNamespace := svc.Namespace
+
+	channelName := fmt.Sprintf("%s-%s-svc", svcNamespace, svcName)
+	stopChFromCache, found := server.cacheManager.Cache.Get(channelName)
+	if !found {
+		return nil
+	}
+	stopCh, ok := stopChFromCache.(chan bool)
+	if !ok {
+		klog.Errorf("failed to get stopCh form cache")
+		return nil
+	}
+	stopCh <- true
+	server.cacheManager.Cache.Delete(channelName)
+	return nil
+}
+
+func (server *Server) startCheckService(diagnose *Diagnose, period int, stopCh <-chan bool) {
 	ticker := time.NewTicker(time.Duration(period) * time.Second)
 	for {
 		select {
@@ -215,8 +355,74 @@ func (server *Server) startCheckService(diagnose *Diagnose, period int, stopCh <
 			_, err = client.Do(req)
 			if err != nil {
 				klog.Errorf("failed to check service endpoint: %s with err: %v", diagnose.CheckEndpoint, err)
+			}
+			klog.Infof("check service endpoint: %s", diagnose.CheckEndpoint)
+		}
+	}
+}
+
+func (server *Server) addIngressCheck(ing *networkingv1.Ingress) error {
+	var checkProtocal string
+	var inClusterIngress bool
+	checkPeriod := ing.Annotations[constant.UbinurseKeyInterval]
+	checkHost := ing.Annotations[constant.UbinurseKeyHost]
+	checkPath := ing.Annotations[constant.UbinurseKeyPath]
+	checkInCluster := ing.Annotations[constant.UbinurseKeyInCluster]
+	if checkInCluster == "" {
+		checkInCluster = "true"
+	}
+	period, err := strconv.Atoi(checkPeriod)
+	if err != nil {
+		return err
+	}
+	ingName := ing.Name
+	ingNamespace := ing.Namespace
+	if checkInCluster == "true" {
+		checkProtocal = "http"
+		inClusterIngress = true
+	} else {
+		checkProtocal = "https"
+		inClusterIngress = false
+	}
+	ep := fmt.Sprintf("%s%s", checkHost, checkPath)
+	diagnose := &Diagnose{
+		CheckType:             constant.TypeIngress,
+		CheckProtocal:         checkProtocal,
+		CheckEndpoint:         ep,
+		CheckIngressIncluster: inClusterIngress,
+	}
+	channelName := fmt.Sprintf("%s-%s-ing", ingNamespace, ingName)
+	stopCh := make(chan bool)
+	server.cacheManager.Cache.Set(channelName, stopCh, cachev2.NoExpiration)
+
+	go server.startCheckIngress(diagnose, period, stopCh)
+	return nil
+}
+
+func (server *Server) startCheckIngress(diagnose *Diagnose, period int, stopCh <-chan bool) {
+	ticker := time.NewTicker(time.Duration(period) * time.Second)
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			body, err := json.Marshal(diagnose)
+			if err != nil {
+				klog.Errorf("failed to check ingress endpoint: %s with err: %v", diagnose.CheckEndpoint, err)
 				break
 			}
+			req, err := http.NewRequest(http.MethodPost, constant.UbinurseHTTPServer, bytes.NewReader(body))
+			if err != nil {
+				klog.Errorf("failed to check ingress endpoint: %s with err: %v", diagnose.CheckEndpoint, err)
+				break
+			}
+			req.Header.Set("Content-Type", "application/json")
+			client := http.Client{Timeout: 5 * time.Second}
+			_, err = client.Do(req)
+			if err != nil {
+				klog.Errorf("failed to check ingress endpoint: %s with err: %v", diagnose.CheckEndpoint, err)
+			}
+			klog.Infof("check ingress endpoint: %s", diagnose.CheckEndpoint)
 		}
 	}
 }
@@ -236,89 +442,4 @@ func (server *Server) handleErr(err error, event interface{}) {
 	utilruntime.HandleError(err)
 	klog.Infof("dropping event %q out of the queue: %v", event, err)
 	server.queue.Forget(event)
-}
-
-func (server *Server) addService(obj interface{}) {
-	svc, ok := obj.(*corev1.Service)
-	if !ok {
-		return
-	}
-	if svc.Annotations["ubinurse.ubiquant.com/port"] == "" || svc.Annotations["ubinurse.ubiquant.com/path"] == "" || svc.Annotations["ubinurse.ubiquant.com/protocal"] == "" {
-		klog.V(2).Infof("service add event for %v/%v without ubinurse enable", svc.Namespace, svc.Name)
-		return
-	}
-	klog.V(2).Infof("enqueue service add event for %v/%v", svc.Namespace, svc.Name)
-	server.enqueue(svc, ServiceAdd)
-}
-
-func (server *Server) updateService(oldObj, newObj interface{}) {
-	// TODO: add logic
-	// svc, ok := obj.(*corev1.Service)
-	// if !ok {
-	// 	return
-	// }
-	// if svc.Annotations["ubinurse.ubiquant.com/port"] == "" || svc.Annotations["ubinurse.ubiquant.com/path"] == "" || svc.Annotations["ubinurse.ubiquant.com/protocal"] == "" {
-	// 	return
-	// }
-	// klog.V(2).Infof("enqueue service add event for %v/%v", svc.Namespace, svc.Name)
-	// server.enqueue(svc, ServiceUpdate)
-}
-
-func (server *Server) deleteService(obj interface{}) {
-	// TODO: add logic
-	// svc, ok := obj.(*corev1.Service)
-	// if !ok {
-	// 	return
-	// }
-	// if svc.Annotations["ubinurse.ubiquant.com/port"] == "" || svc.Annotations["ubinurse.ubiquant.com/path"] == "" || svc.Annotations["ubinurse.ubiquant.com/protocal"] == "" {
-	// 	return
-	// }
-	// klog.V(2).Infof("enqueue service add event for %v/%v", svc.Namespace, svc.Name)
-	// server.enqueue(svc, ServiceUpdate)
-}
-
-func (server *Server) addIngress(obj interface{}) {
-	ing, ok := obj.(*networkingv1.Ingress)
-	if !ok {
-		return
-	}
-	if ing.Annotations["ubinurse.ubiquant.com/port"] == "" || ing.Annotations["ubinurse.ubiquant.com/path"] == "" || ing.Annotations["ubinurse.ubiquant.com/protocal"] == "" {
-		return
-	}
-	klog.V(2).Infof("enqueue ingress add event for %v/%v", ing.Namespace, ing.Name)
-	server.enqueue(ing, IngressAdd)
-}
-
-func (server *Server) updateIngress(oldObj, newObj interface{}) {
-	// TODO: add logic
-	// svc, ok := obj.(*corev1.Service)
-	// if !ok {
-	// 	return
-	// }
-	// if svc.Annotations["ubinurse.ubiquant.com/port"] == "" || svc.Annotations["ubinurse.ubiquant.com/path"] == "" || svc.Annotations["ubinurse.ubiquant.com/protocal"] == "" {
-	// 	return
-	// }
-	// klog.V(2).Infof("enqueue service add event for %v/%v", svc.Namespace, svc.Name)
-	// server.enqueue(svc, ServiceUpdate)
-}
-
-func (server *Server) deleteIngress(obj interface{}) {
-	// TODO: add logic
-	// svc, ok := obj.(*corev1.Service)
-	// if !ok {
-	// 	return
-	// }
-	// if svc.Annotations["ubinurse.ubiquant.com/port"] == "" || svc.Annotations["ubinurse.ubiquant.com/path"] == "" || svc.Annotations["ubinurse.ubiquant.com/protocal"] == "" {
-	// 	return
-	// }
-	// klog.V(2).Infof("enqueue service add event for %v/%v", svc.Namespace, svc.Name)
-	// server.enqueue(svc, ServiceUpdate)
-}
-
-func (server *Server) enqueue(obj interface{}, eventType EventType) {
-	e := &Event{
-		Obj:  obj,
-		Type: eventType,
-	}
-	server.queue.Add(e)
 }

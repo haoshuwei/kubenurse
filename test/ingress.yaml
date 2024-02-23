@@ -1,18 +1,23 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
+  annotations:
+    ubinurse.ubiquant.com/host: "nginx.haoshuwei.com"
+    ubinurse.ubiquant.com/path: "/"
+    ubinurse.ubiquant.com/inCluster: "true"
+    ubinurse.ubiquant.com/interval: "10"
   name: nginx
+  namespace: dst
 spec:
   ingressClassName: nginx
   rules:
   - host: nginx.haoshuwei.com
     http:
       paths:
-      - path: /
-        pathType: Prefix
-        backend:
+      - backend:
           service:
             name: nginx
             port:
               number: 8080
-
+        path: /
+        pathType: Prefix

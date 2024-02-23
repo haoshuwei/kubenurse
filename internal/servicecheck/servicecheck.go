@@ -233,12 +233,15 @@ func (c *Checker) MeService(ctx context.Context) (string, error) {
 // 	return c.doHttpCheck(ctx, ep, inCluster)
 // }
 
-func (c *Checker) CheckService(ctx context.Context, ep string, checkProtocal string, inCluster bool) error {
+func (c *Checker) CheckService(ctx context.Context, ep string, checkType string, checkProtocal string, inCluster bool) error {
 	switch checkProtocal {
 	case "tcp":
 		return c.doTcpCheck(ctx, ep)
 	default:
-		return c.doHttpCheck(ctx, ep, inCluster)
+		if checkType == "ingress" {
+			return c.doIngressCheck(ctx, ep, inCluster)
+		}
+		return c.doHttpCheck(ctx, ep)
 	}
 }
 
@@ -293,7 +296,7 @@ func (c *Checker) measureV2(check CheckV2, checkType, checkProtocal, checkDstEnd
 	ctx := context.WithValue(context.Background(), kubenurseTypeKey{}, checkType)
 
 	// Execute check
-	err := check(ctx, checkDstEndpoint, checkProtocal, inCluster)
+	err := check(ctx, checkDstEndpoint, checkType, checkProtocal, inCluster)
 	//log.Printf("measureV2 label: %s, ep: %s", label, ep)
 
 	// Process metrics

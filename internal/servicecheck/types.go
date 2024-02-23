@@ -70,7 +70,7 @@ type Result struct {
 
 // Check is the signature used by all checks that the checker can execute.
 type Check func(ctx context.Context) (string, error)
-type CheckV2 func(ctx context.Context, ep string, checkProtocal string, inCluster bool) error
+type CheckV2 func(ctx context.Context, ep string, checkType string, checkProtocal string, inCluster bool) error
 
 // CachedResult represents a cached check result that is valid until the expiration.
 type CachedResult struct {

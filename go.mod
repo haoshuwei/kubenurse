@@ -3,6 +3,7 @@ module github.com/postfinance/kubenurse
 go 1.20
 
 require (
+	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/prometheus/client_golang v1.18.0
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/pflag v1.0.5
